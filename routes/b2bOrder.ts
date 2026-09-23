@@ -13,11 +13,84 @@ import { challenges } from '../data/datacache'
 import * as security from '../lib/insecurity'
 import * as utils from '../lib/utils'
 
+function hasDisallowedPatterns (data: any): boolean {
+  let str = ''
+  if (typeof data === 'string') {
+    str = data
+  } else {
+    try {
+      str = JSON.stringify(data) ?? ''
+    } catch {
+      return true
+    }
+  }
+
+  let normalized = str
+    .replace(/\\u\{([0-9a-fA-F]+)\}/g, (_, hex) => {
+      try { return String.fromCodePoint(parseInt(hex, 16)) } catch { return '' }
+    })
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => {
+      try { return String.fromCharCode(parseInt(hex, 16)) } catch { return '' }
+    })
+    .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) => {
+      try { return String.fromCharCode(parseInt(hex, 16)) } catch { return '' }
+    })
+
+  let prev = ''
+  while (prev !== normalized) {
+    prev = normalized
+    normalized = normalized.replace(/['"`]\s*\+\s*['"`]/g, '')
+  }
+
+  const disallowedPatterns = [
+    /constructor/i,
+    /__proto__/i,
+    /prototype/i,
+    /getPrototypeOf/i,
+    /getOwnProperty/i,
+    /setPrototypeOf/i,
+    /\bprocess\b/i,
+    /mainModule/i,
+    /\brequire\b/i,
+    /child_process/i,
+    /\bexec(Sync|File|FileSync)?\b/i,
+    /\bspawn(Sync)?\b/i,
+    /\bFunction\b/,
+    /\bglobal(This)?\b/i,
+    /\bimport\b/i,
+    /\beval\b/i,
+    /\bcallee\b/i,
+    /\bcaller\b/i,
+    /fromCharCode/i,
+    /fromCodePoint/i,
+    /\bBuffer\b/,
+    /\bReflect\b/,
+    /\bProxy\b/,
+    /\$\{/
+  ]
+
+  if (disallowedPatterns.some(pattern => pattern.test(str) || pattern.test(normalized))) {
+    return true
+  }
+
+  try {
+    const uriDecoded = decodeURIComponent(str)
+    if (disallowedPatterns.some(pattern => pattern.test(uriDecoded))) {
+      return true
+    }
+  } catch {}
+
+  return false
+}
+
 export function b2bOrder () {
   return ({ body }: Request, res: Response, next: NextFunction) => {
     if (utils.isChallengeEnabled(challenges.rceChallenge) || utils.isChallengeEnabled(challenges.rceOccupyChallenge)) {
       const orderLinesData = body.orderLinesData || ''
       try {
+        if (hasDisallowedPatterns(orderLinesData)) {
+          throw new Error('Sandbox breakout attempt detected')
+        }
         const sandbox = { safeEval, orderLinesData }
         vm.createContext(sandbox)
         vm.runInContext('safeEval(orderLinesData)', sandbox, { timeout: 2000 })
